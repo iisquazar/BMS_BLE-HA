@@ -24,12 +24,12 @@ class BMS(BaseBMS):
     def __init__(self, ble_device: BLEDevice, reconnect: bool = False) -> None:
         """Initialize BMS."""
         LOGGER.debug("%s init(), BT address: %s", self.device_id(), ble_device.address)
-        super().__init__(LOGGER, self._notification_handler, ble_device, reconnect)
+        super().__init__("qdt10wd", ble_device, reconnect)
 
     @staticmethod
     def matcher_dict_list() -> list[dict[str, Any]]:
         """Provide BluetoothMatcher definition."""
-        return [{"local_name": "QDT10WD", "connectable": True}]
+        return [{"local_name": "QDT10WD*", "service_uuid": normalize_uuid_str("ffff"), "connectable": True}]
 
     @staticmethod
     def device_info() -> dict[str, str]:
@@ -51,8 +51,8 @@ class BMS(BaseBMS):
         """Return UUID of characteristic that provides write property."""
         return "0000ff01-0000-1000-8000-00805f9b34fb"
 
-    @staticmethod
-    def _calc_values() -> set[str]:
+    def _calc_values(self) -> set[str]:
+        """Return the set of values this BMS provides."""
         return {
             ATTR_POWER,
             ATTR_BATTERY_CHARGING,
@@ -60,7 +60,7 @@ class BMS(BaseBMS):
 
     def _notification_handler(self, _sender, data: bytearray) -> None:
         """Handle the RX characteristics notify event (new data arrives)."""
-        LOGGER.debug("%s: Received BLE data: %s", self.name, data.hex(' '))
+        LOGGER.debug("%s: Received BLE data: %s", self.name, data.hex(" "))
         # TODO: parse data and store it in self._data
         # self._data = data
         # self._data_event.set()
