@@ -1,80 +1,79 @@
-"""Module to support QDT10WD BMS."""
+"""Module to support QDT10WD BMS over BLE."""
 
-import logging
-from typing import Any
+import asyncio
+from collections.abc import Callable
+from typing import Final
 
+from bleak.backends.characteristic import BleakGATTCharacteristic
 from bleak.backends.device import BLEDevice
 from bleak.uuids import normalize_uuid_str
 
 from custom_components.bms_ble.const import (
-    ATTR_BATTERY_CHARGING,
     ATTR_CURRENT,
-    ATTR_POWER,
+    ATTR_BATTERY_LEVEL,
     ATTR_VOLTAGE,
+    KEY_CELL_VOLTAGE,
 )
 
 from .basebms import BaseBMS, BMSsample
 
-LOGGER = logging.getLogger(__name__)
-BAT_TIMEOUT = 10
 
 class BMS(BaseBMS):
-    """QDT10WD BMS class implementation."""
+    """QDT10WD BMS BLE class implementation."""
+
+    SERVICE_UUID: Final = normalize_uuid_str("0000ffff-0000-1000-8000-00805f9b34fb")
+    CHARACTERISTIC_UUID: Final = normalize_uuid_str("0000ffe1-0000-1000-8000-00805f9b34fb")
+    TRIGGER_COMMAND: Final = bytes.fromhex("7E3631303134364237453030323031464431440D")  # ~610146B7...
 
     def __init__(self, ble_device: BLEDevice, reconnect: bool = False) -> None:
-        """Initialize BMS."""
-        LOGGER.debug("%s init(), BT address: %s", self.device_id(), ble_device.address)
-        super().__init__("qdt10wd", ble_device, reconnect)
+        super().__init__(__name__, ble_device, reconnect)
+        self._data_final: bytearray = bytearray()
 
     @staticmethod
-    def matcher_dict_list() -> list[dict[str, Any]]:
-        """Provide BluetoothMatcher definition."""
-        return [{"local_name": "QDT10WD*", "service_uuid": normalize_uuid_str("ffff"), "connectable": True}]
+    def matcher_dict_list() -> list[dict]:
+        return [{"service_uuid": BMS.SERVICE_UUID, "connectable": True}]
 
     @staticmethod
     def device_info() -> dict[str, str]:
-        """Return device information for the battery management system."""
         return {"manufacturer": "QDT", "model": "QDT10WD"}
 
     @staticmethod
     def uuid_services() -> list[str]:
-        """Return list of 128-bit UUIDs of services required by BMS."""
-        return [normalize_uuid_str("0000ffff-0000-1000-8000-00805f9b34fb")]
+        return [BMS.SERVICE_UUID]
 
     @staticmethod
     def uuid_rx() -> str:
-        """Return UUID of characteristic that provides notification/read property."""
-        return "0000ff02-0000-1000-8000-00805f9b34fb"
+        return BMS.CHARACTERISTIC_UUID
 
     @staticmethod
     def uuid_tx() -> str:
-        """Return UUID of characteristic that provides write property."""
-        return "0000ff01-0000-1000-8000-00805f9b34fb"
+        return BMS.CHARACTERISTIC_UUID
 
-    def _calc_values(self) -> set[str]:
-        """Return the set of values this BMS provides."""
-        return {
-            ATTR_POWER,
-            ATTR_BATTERY_CHARGING,
-        }
-
-    def _notification_handler(self, _sender, data: bytearray) -> None:
-        """Handle the RX characteristics notify event (new data arrives)."""
-        LOGGER.debug("%s: Received BLE data: %s", self.name, data.hex(" "))
-        # TODO: parse data and store it in self._data
-        # self._data = data
-        # self._data_event.set()
+    def _notification_handler(self, _: BleakGATTCharacteristic, data: bytearray) -> None:
+        if data.startswith(b"~61"):
+            self._data_final = data
+            self._data_event.set()
 
     async def _async_update(self) -> BMSsample:
-        """Update battery status information."""
-        LOGGER.debug("(%s) Sending command to UUID %s", self.name, BMS.uuid_tx())
+        self._data_event.clear()
+        await self._client.write_gatt_char(self.uuid_tx(), self.TRIGGER_COMMAND)
+        await asyncio.wait_for(self._data_event.wait(), timeout=self.TIMEOUT)
 
-        # Voorbeeld: stuur een commando als dat nodig is
-        # await self._client.write_gatt_char(BMS.uuid_tx(), data=b"<command_bytes>")
-        # await asyncio.wait_for(self._wait_event(), timeout=BAT_TIMEOUT)
+        data = self._data_final
 
-        # TODO: parse real values from self._data (set in _notification_handler)
+        # Eenvoudige parser op basis van bekende offsets (kan worden uitgebreid)
+        voltage = int.from_bytes(data[7:9], byteorder="big") / 100.0
+        current = int.from_bytes(data[11:13], byteorder="big", signed=True) / 100.0
+        soc = data[7]
+
+        cells = {
+            f"{KEY_CELL_VOLTAGE}{i+1}": int.from_bytes(data[112 + i * 2:114 + i * 2], byteorder="big") / 1000
+            for i in range(16)
+        }
+
         return {
-            ATTR_VOLTAGE: 12.5,     # Dummy-waarde, pas aan
-            ATTR_CURRENT: 1.2,      # Dummy-waarde, pas aan
+            ATTR_VOLTAGE: voltage,
+            ATTR_CURRENT: current,
+            ATTR_BATTERY_LEVEL: soc,
+            **cells
         }
